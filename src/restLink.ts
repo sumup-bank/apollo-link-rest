@@ -81,9 +81,10 @@ export namespace RestLink {
     [bodySerializer: string]: Serializer;
   }
 
-  export type DetermineError = (
+  export type ErrorTransformer = (
     request: Response,
-    operationName: OperationName,
+    next: () => {},
+    context: RequestContext,
   ) => Boolean;
 
   export type CustomFetch = (
@@ -180,7 +181,7 @@ export namespace RestLink {
     /**
      * Custom function to determine if response as a error
      */
-    determineError?: DetermineError;
+    errorTransformer?: ErrorTransformer;
 
     /**
      * Add serializers that will serialize the body before it is emitted and will pass on
@@ -207,6 +208,9 @@ export namespace RestLink {
      * @default `GET`
      */
     method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    /**
+     *
+     */
     /** What GraphQL type to name the response */
     type?: string;
     /**
@@ -807,7 +811,7 @@ interface RequestContext {
 
   endpoints: RestLink.Endpoints;
   customFetch: RestLink.CustomFetch;
-  determineError: RestLink.DetermineError;
+  errorTransformer: RestLink.ErrorTransformer;
   operationName: RestLink.OperationName;
   operationType: OperationTypeNode;
   fieldNameNormalizer: RestLink.FieldNameNormalizer;
@@ -896,8 +900,7 @@ const resolver: Resolver = async (
     endpoints,
     headers,
     customFetch,
-    determineError,
-    operationName,
+    errorTransformer,
     operationType,
     typePatcher,
     mainDefinition,
@@ -1063,29 +1066,31 @@ const resolver: Resolver = async (
     // In a GraphQL context a missing resource should be indicated by
     // a null value rather than throwing a network error
     result = null;
-  } else if (determineError && !determineError(response, operationName)) {
-    if (response.headers.get('Content-Length') === '0') {
-      result = {};
-    } else {
-      result = response;
-    }
   } else {
-    // Default error handling:
-    // Throw a JSError, that will be available under the
-    // "Network error" category in apollo-link-error
-    let parsed: any;
-    // responses need to be cloned as they can only be read once
-    try {
-      parsed = await response.clone().json();
-    } catch (error) {
-      // its not json
-      parsed = await response.clone().text();
+    const next = async () => {
+      // Default error handling:
+      // Throw a JSError, that will be available under the
+      // "Network error" category in apollo-link-error
+      let parsed: any;
+      // responses need to be cloned as they can only be read once
+      try {
+        parsed = await response.clone().json();
+      } catch (error) {
+        // its not json
+        parsed = await response.clone().text();
+      }
+      rethrowServerSideError(
+        response,
+        parsed,
+        `Response not successful: Received status code ${response.status}`,
+      );
+    };
+
+    if (errorTransformer) {
+      result = await errorTransformer(response, next, context);
+    } else {
+      await next();
     }
-    rethrowServerSideError(
-      response,
-      parsed,
-      `Response not successful: Received status code ${response.status}`,
-    );
   }
 
   const transformer = endpointOption.responseTransformer || responseTransformer;
@@ -1151,7 +1156,7 @@ export class RestLink extends ApolloLink {
   private readonly typePatcher: RestLink.FunctionalTypePatcher;
   private readonly credentials: RequestCredentials;
   private readonly customFetch: RestLink.CustomFetch;
-  private readonly determineError: RestLink.DetermineError;
+  private readonly errorTransformer: RestLink.ErrorTransformer;
   private readonly serializers: RestLink.Serializers;
   private readonly responseTransformer: RestLink.ResponseTransformer;
 
@@ -1163,7 +1168,7 @@ export class RestLink extends ApolloLink {
     fieldNameDenormalizer,
     typePatcher,
     customFetch,
-    determineError,
+    errorTransformer,
     credentials,
     bodySerializers,
     defaultSerializer,
@@ -1247,7 +1252,7 @@ export class RestLink extends ApolloLink {
     this.headers = normalizeHeaders(headers);
     this.credentials = credentials || null;
     this.customFetch = customFetch;
-    this.determineError = determineError;
+    this.errorTransformer = errorTransformer;
     this.serializers = {
       [DEFAULT_SERIALIZER_KEY]: defaultSerializer || DEFAULT_JSON_SERIALIZER,
       ...(bodySerializers || {}),
@@ -1314,7 +1319,7 @@ export class RestLink extends ApolloLink {
       exportVariablesByNode: new Map(),
       credentials,
       customFetch: this.customFetch,
-      determineError: this.determineError,
+      errorTransformer: this.errorTransformer,
       operationType,
       operationName,
       fieldNameNormalizer: this.fieldNameNormalizer,

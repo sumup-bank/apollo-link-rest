@@ -1718,11 +1718,14 @@ describe('Query multiple calls', () => {
     expect(data.post.tags).toBeDefined();
   });
 
-  it('can call determineError before raise a exception for http error', async () => {
-    const determineError = (request, operationName) => {
-      return !(request.status == 403 && operationName === 'tags');
+  it('can call errorTransformer before raise a exception for http error', async () => {
+    const errorTransformer = (request, next, { operationName }) => {
+      return request.status == 403 && operationName === 'tags' ? [] : next();
     };
-    const link = new RestLink({ uri: '/api', determineError: determineError });
+    const link = new RestLink({
+      uri: '/api',
+      errorTransformer: errorTransformer,
+    });
 
     fetchMock.get('/api/tags', {
       status: 403,
