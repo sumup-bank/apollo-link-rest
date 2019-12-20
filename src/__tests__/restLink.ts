@@ -1718,6 +1718,35 @@ describe('Query multiple calls', () => {
     expect(data.post.tags).toBeDefined();
   });
 
+  it('can call determineError before raise a exception for http error', async () => {
+    const determineError = (request, operationName) => {
+      return !(request.status == 403 && operationName === 'tags');
+    };
+    const link = new RestLink({ uri: '/api', determineError: determineError });
+
+    fetchMock.get('/api/tags', {
+      status: 403,
+      body: { status: 'error', message: 'Forbidden' },
+    });
+
+    const tagsQuery = gql`
+      query tags {
+        tags @rest(type: "[Tag]", path: "/tags") {
+          name
+        }
+      }
+    `;
+
+    const { data } = await makePromise<Result>(
+      execute(link, {
+        operationName: 'tags',
+        query: tagsQuery,
+      }),
+    );
+
+    expect(data.tags).toBeDefined();
+  });
+
   it('can return a partial result if one out of multiple rest calls fail', async () => {
     expect.assertions(2);
 

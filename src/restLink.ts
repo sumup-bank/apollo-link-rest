@@ -34,6 +34,7 @@ import { removeRestSetsFromDocument } from './utils';
 
 export namespace RestLink {
   export type URI = string;
+  export type OperationName = string;
 
   export type Endpoint = string;
 
@@ -79,6 +80,11 @@ export namespace RestLink {
   export interface Serializers {
     [bodySerializer: string]: Serializer;
   }
+
+  export type DetermineError = (
+    request: Response,
+    operationName: OperationName,
+  ) => Boolean;
 
   export type CustomFetch = (
     request: RequestInfo,
@@ -170,6 +176,11 @@ export namespace RestLink {
      * Use a custom fetch to handle REST calls.
      */
     customFetch?: CustomFetch;
+
+    /**
+     * Custom function to determine if response as a error
+     */
+    determineError?: DetermineError;
 
     /**
      * Add serializers that will serialize the body before it is emitted and will pass on
@@ -796,6 +807,8 @@ interface RequestContext {
 
   endpoints: RestLink.Endpoints;
   customFetch: RestLink.CustomFetch;
+  determineError: RestLink.DetermineError;
+  operationName: RestLink.OperationName;
   operationType: OperationTypeNode;
   fieldNameNormalizer: RestLink.FieldNameNormalizer;
   fieldNameDenormalizer: RestLink.FieldNameNormalizer;
@@ -883,6 +896,8 @@ const resolver: Resolver = async (
     endpoints,
     headers,
     customFetch,
+    determineError,
+    operationName,
     operationType,
     typePatcher,
     mainDefinition,
@@ -1048,6 +1063,12 @@ const resolver: Resolver = async (
     // In a GraphQL context a missing resource should be indicated by
     // a null value rather than throwing a network error
     result = null;
+  } else if (determineError && !determineError(response, operationName)) {
+    if (response.headers.get('Content-Length') === '0') {
+      result = {};
+    } else {
+      result = response;
+    }
   } else {
     // Default error handling:
     // Throw a JSError, that will be available under the
@@ -1130,6 +1151,7 @@ export class RestLink extends ApolloLink {
   private readonly typePatcher: RestLink.FunctionalTypePatcher;
   private readonly credentials: RequestCredentials;
   private readonly customFetch: RestLink.CustomFetch;
+  private readonly determineError: RestLink.DetermineError;
   private readonly serializers: RestLink.Serializers;
   private readonly responseTransformer: RestLink.ResponseTransformer;
 
@@ -1141,6 +1163,7 @@ export class RestLink extends ApolloLink {
     fieldNameDenormalizer,
     typePatcher,
     customFetch,
+    determineError,
     credentials,
     bodySerializers,
     defaultSerializer,
@@ -1224,6 +1247,7 @@ export class RestLink extends ApolloLink {
     this.headers = normalizeHeaders(headers);
     this.credentials = credentials || null;
     this.customFetch = customFetch;
+    this.determineError = determineError;
     this.serializers = {
       [DEFAULT_SERIALIZER_KEY]: defaultSerializer || DEFAULT_JSON_SERIALIZER,
       ...(bodySerializers || {}),
@@ -1234,7 +1258,13 @@ export class RestLink extends ApolloLink {
     operation: Operation,
     forward?: NextLink,
   ): Observable<FetchResult> | null {
-    const { query, variables, getContext, setContext } = operation;
+    const {
+      query,
+      variables,
+      getContext,
+      operationName,
+      setContext,
+    } = operation;
     const context: LinkChainContext | any = getContext() as any;
     const isRestQuery = hasDirectives(['rest'], query);
     if (!isRestQuery) {
@@ -1284,7 +1314,9 @@ export class RestLink extends ApolloLink {
       exportVariablesByNode: new Map(),
       credentials,
       customFetch: this.customFetch,
+      determineError: this.determineError,
       operationType,
+      operationName,
       fieldNameNormalizer: this.fieldNameNormalizer,
       fieldNameDenormalizer: this.fieldNameDenormalizer,
       mainDefinition,
